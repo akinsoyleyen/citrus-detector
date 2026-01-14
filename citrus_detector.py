@@ -142,7 +142,7 @@ class CitrusDetector:
     objects in an image in a single pass.
     """
     
-    def __init__(self, confidence: float = 0.25):
+    def __init__(self, confidence: float = 0.15):
         """
         Initialize the detector.
         
