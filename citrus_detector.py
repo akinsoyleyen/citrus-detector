@@ -136,34 +136,68 @@ class ArUcoDetector:
 class CitrusDetector:
     """
     Detects citrus fruits in images using YOLOv8 AI model.
-    
+
     YOLO = "You Only Look Once"
-    It's a fast object detection model that can find multiple 
+    It's a fast object detection model that can find multiple
     objects in an image in a single pass.
     """
-    
-    def __init__(self, confidence: float = 0.15):
+
+    def __init__(self, confidence: float = 0.15, fruit_type: str = 'orange'):
         """
         Initialize the detector.
-        
+
         Args:
             confidence: Minimum confidence threshold (0.0 to 1.0)
                        - Lower (0.15) = finds more fruits, but more false positives
                        - Higher (0.40) = fewer fruits, but more accurate
                        - Default (0.25) = balanced
+            fruit_type: Type of fruit being detected ('orange', 'lemon', 'grapefruit')
+                       - 'orange': uses average of width/height (round fruit)
+                       - 'lemon': orientation-aware (uses smallest dimension for elongated fruits)
+                       - 'grapefruit': uses average of width/height (round fruit)
         """
         self.confidence = confidence
+        self.fruit_type = fruit_type.lower()
         
-        # Load YOLOv8 nano model (smallest, fastest)
+        # Load YOLO11 nano model (smallest, fastest, latest stable version)
         # First run will download the model (~6MB)
-        print("Loading YOLO model...")
-        self.model = YOLO("yolov8n.pt")
+        print("Loading YOLO26 model...")
+        self.model = YOLO("yolo26n.pt")
         print("Model loaded!")
         
         # YOLO is trained on COCO dataset which includes 'orange' (class 49)
         # We'll use this to detect citrus fruits
         self.fruit_classes = ['orange', 'apple']  # apple sometimes catches citrus too
-    
+
+    def _calculate_diameter(self, width_px: float, height_px: float) -> float:
+        """
+        Calculate fruit diameter based on fruit type and orientation.
+
+        Args:
+            width_px: Width of bounding box in pixels
+            height_px: Height of bounding box in pixels
+
+        Returns:
+            Calculated diameter in pixels
+        """
+        if self.fruit_type == 'lemon':
+            # Lemons are elongated - detect orientation and use appropriate dimension
+            aspect_ratio = max(width_px, height_px) / min(width_px, height_px)
+
+            # If significantly elongated (aspect ratio > 1.3), use the smaller dimension
+            # This gives us the actual fruit diameter, not the length
+            if aspect_ratio > 1.3:
+                diameter = min(width_px, height_px)
+            else:
+                # If roughly square, it's probably facing camera, average both
+                diameter = (width_px + height_px) / 2
+
+            return diameter
+
+        else:
+            # For round fruits (oranges, grapefruits), average both dimensions
+            return (width_px + height_px) / 2
+
     def detect(self, image_path: str, marker_size_mm: float = None):
         """
         Detect citrus fruits in an image.
@@ -216,14 +250,18 @@ class CitrusDetector:
                 # Get bounding box coordinates
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-                # Calculate size
+                # Calculate size based on fruit type
                 width_px = x2 - x1
                 height_px = y2 - y1
-                diameter_px = (width_px + height_px) / 2  # Average for round fruits
+
+                # Calculate diameter based on fruit type
+                diameter_px = self._calculate_diameter(width_px, height_px)
 
                 # Build fruit data
                 fruit = {
                     'bbox': (x1, y1, x2, y2),
+                    'width_pixels': width_px,
+                    'height_pixels': height_px,
                     'diameter_pixels': diameter_px,
                     'confidence': float(box.conf[0])
                 }
@@ -231,6 +269,8 @@ class CitrusDetector:
                 # Add real-world size if we have scale
                 if mm_per_pixel:
                     fruit['diameter_mm'] = diameter_px * mm_per_pixel
+                    fruit['width_mm'] = width_px * mm_per_pixel
+                    fruit['height_mm'] = height_px * mm_per_pixel
 
                 fruits.append(fruit)
 
@@ -336,9 +376,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Detect citrus fruits in images")
     parser.add_argument("image", nargs="?", help="Path to image file")
     parser.add_argument("--marker-size", type=float, default=None,
-                       help="ArUco marker size in mm (e.g., 50)")
+                       help="ArUco marker size in mm (e.g., 50 or 100)")
     parser.add_argument("--confidence", type=float, default=0.25,
                        help="Detection confidence 0.0-1.0 (default: 0.25)")
+    parser.add_argument("--fruit-type", type=str, default="orange",
+                       choices=["orange", "lemon", "grapefruit"],
+                       help="Type of fruit: orange (round), lemon (elongated), grapefruit (round)")
     parser.add_argument("--generate-marker", action="store_true",
                        help="Generate a printable ArUco marker")
     
@@ -352,9 +395,14 @@ if __name__ == "__main__":
     # Need an image for detection
     if not args.image:
         print("Usage:")
-        print("  py -3.12 citrus_detector.py photo.jpg")
-        print("  py -3.12 citrus_detector.py photo.jpg --marker-size 50")
-        print("  py -3.12 citrus_detector.py --generate-marker")
+        print("  python3 citrus_detector.py photo.jpg")
+        print("  python3 citrus_detector.py photo.jpg --marker-size 100")
+        print("  python3 citrus_detector.py photo.jpg --marker-size 100 --fruit-type lemon")
+        print("  python3 citrus_detector.py --generate-marker")
+        print("\nFruit types:")
+        print("  orange     - Round fruits (uses average width/height)")
+        print("  lemon      - Elongated fruits (orientation-aware measurement)")
+        print("  grapefruit - Round fruits (uses average width/height)")
         sys.exit(1)
     
     # Check image exists
@@ -366,8 +414,9 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Citrus Fruit Detector")
     print("=" * 50)
-    
-    detector = CitrusDetector(confidence=args.confidence)
+    print(f"Fruit type: {args.fruit_type.capitalize()}")
+
+    detector = CitrusDetector(confidence=args.confidence, fruit_type=args.fruit_type)
     results = detector.detect(args.image, marker_size_mm=args.marker_size)
     
     # Print results
