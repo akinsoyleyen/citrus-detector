@@ -159,10 +159,10 @@ class CitrusDetector:
         self.confidence = confidence
         self.fruit_type = fruit_type.lower()
         
-        # Load YOLO11 nano model (smallest, fastest, latest stable version)
+        # Load YOLO26 nano segmentation model (traces fruit outlines, not boxes)
         # First run will download the model (~6MB)
-        print("Loading YOLO26 model...")
-        self.model = YOLO("yolo26n.pt")
+        print("Loading YOLO26 segmentation model...")
+        self.model = YOLO("yolo26n-seg.pt")  # -seg = segmentation model
         print("Model loaded!")
         
         # YOLO is trained on COCO dataset which includes 'orange' (class 49)
@@ -238,7 +238,16 @@ class CitrusDetector:
         fruits = []
 
         for result in results:
-            for box in result.boxes:
+            # Check if we have segmentation masks
+            has_masks = hasattr(result, 'masks') and result.masks is not None
+
+            if has_masks:
+                print(f"✓ Segmentation masks detected! Using precise shape measurements.")
+            else:
+                print(f"⚠ No segmentation masks found, using bounding boxes.")
+
+            boxes = result.boxes
+            for i, box in enumerate(boxes):
                 # Get class name
                 class_id = int(box.cls[0])
                 class_name = self.model.names[class_id]
@@ -266,6 +275,45 @@ class CitrusDetector:
                     'confidence': float(box.conf[0])
                 }
 
+                # If we have segmentation mask, calculate more accurate measurements
+                if has_masks:
+                    mask = result.masks.data[i].cpu().numpy()
+
+                    # Get original image dimensions
+                    img_height, img_width = image.shape[:2]
+                    mask_height, mask_width = mask.shape
+
+                    # Calculate scale factors (mask might be lower resolution)
+                    scale_x = img_width / mask_width
+                    scale_y = img_height / mask_height
+
+                    # Get mask coordinates
+                    mask_points = np.argwhere(mask > 0.5)
+                    if len(mask_points) > 0:
+                        # Calculate actual fruit dimensions from mask
+                        y_coords, x_coords = mask_points[:, 0], mask_points[:, 1]
+
+                        # Method 1: Calculate equivalent circular diameter from mask area
+                        # This works for any angle/orientation
+                        mask_area_pixels = len(mask_points)  # Number of pixels in mask
+                        scaled_area = mask_area_pixels * scale_x * scale_y  # Scale to original image
+
+                        # For a circle: area = π * r², so diameter = 2 * sqrt(area / π)
+                        mask_diameter_from_area = 2 * np.sqrt(scaled_area / np.pi)
+
+                        # Method 2: Also calculate bounding box method for comparison
+                        mask_width_px = (x_coords.max() - x_coords.min()) * scale_x
+                        mask_height_px = (y_coords.max() - y_coords.min()) * scale_y
+                        mask_diameter_from_bbox = self._calculate_diameter(mask_width_px, mask_height_px)
+
+                        # Use area-based method (more accurate for angled fruits)
+                        fruit['mask_diameter_pixels'] = mask_diameter_from_area
+                        fruit['mask_diameter_bbox_pixels'] = mask_diameter_from_bbox  # Keep for comparison
+
+                        if mm_per_pixel:
+                            fruit['mask_diameter_mm'] = mask_diameter_from_area * mm_per_pixel
+                            fruit['mask_diameter_bbox_mm'] = mask_diameter_from_bbox * mm_per_pixel
+
                 # Add real-world size if we have scale
                 if mm_per_pixel:
                     fruit['diameter_mm'] = diameter_px * mm_per_pixel
@@ -284,10 +332,12 @@ class CitrusDetector:
 
         # Add size statistics if we have measurements
         if fruits and mm_per_pixel:
-            diameters = [f['diameter_mm'] for f in fruits]
+            # Prefer mask-based measurements if available
+            diameters = [f.get('mask_diameter_mm', f['diameter_mm']) for f in fruits]
             result['avg_diameter_mm'] = np.mean(diameters)
             result['min_diameter_mm'] = np.min(diameters)
             result['max_diameter_mm'] = np.max(diameters)
+            result['using_segmentation'] = any('mask_diameter_mm' in f for f in fruits)
 
         return result
 
@@ -319,8 +369,10 @@ class CitrusDetector:
             # Draw rectangle around fruit
             cv2.rectangle(image, (x1, y1), (x2, y2), GREEN, 2)
 
-            # Create label text
-            if 'diameter_mm' in fruit:
+            # Create label text (prefer mask measurement if available)
+            if 'mask_diameter_mm' in fruit:
+                label = f"#{i}: {fruit['mask_diameter_mm']:.0f}mm (seg)"
+            elif 'diameter_mm' in fruit:
                 label = f"#{i}: {fruit['diameter_mm']:.0f}mm"
             else:
                 label = f"#{i}: {fruit['diameter_pixels']:.0f}px"
