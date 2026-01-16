@@ -3,7 +3,16 @@
     "allow": [
       "Bash(python3 citrus_detector.py:*)",
       "Bash(pip3 install:*)",
-      "Bash(python3 -c \"from citrus_detector import ArUcoDetector; ArUcoDetector.generate_marker\\(marker_id=0, size_pixels=400, output_path=''aruco_marker_10cm.png''\\)\")"
+      "Bash(python3 -c \"from citrus_detector import ArUcoDetector; ArUcoDetector.generate_marker\\(marker_id=0, size_pixels=400, output_path=''aruco_marker_10cm.png''\\)\")",
+      "Bash(git count-objects -vH)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git rm -r --cached venv/)",
+      "Bash(git rm --cached photo.jpg photo_detected.jpg yolo26n-seg.pt)",
+      "Bash(git reflog:*)",
+      "Bash(git gc:*)",
+      "Bash(git rev-list --objects --all)",
+      "Bash(git cat-file:*)"
     ]
   }
 }
