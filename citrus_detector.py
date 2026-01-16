@@ -142,7 +142,8 @@ class CitrusDetector:
     objects in an image in a single pass.
     """
 
-    def __init__(self, confidence: float = 0.15, fruit_type: str = 'orange'):
+    def __init__(self, confidence: float = 0.15, fruit_type: str = 'orange',
+                 min_size: float = 0.05, max_size: float = 0.7, iou_threshold: float = 0.5):
         """
         Initialize the detector.
 
@@ -155,9 +156,19 @@ class CitrusDetector:
                        - 'orange': uses average of width/height (round fruit)
                        - 'lemon': orientation-aware (uses smallest dimension for elongated fruits)
                        - 'grapefruit': uses average of width/height (round fruit)
+            min_size: Minimum detection size as fraction of image (0.0-1.0, default 0.05 = 5%)
+                     Filters out noise and very small false detections
+            max_size: Maximum detection size as fraction of image (0.0-1.0, default 0.7 = 70%)
+                     Filters out large objects like boxes or background
+            iou_threshold: IoU threshold for removing duplicate detections (0.0-1.0, default 0.5)
+                          - Lower (0.3) = more aggressive deduplication
+                          - Higher (0.7) = only removes very overlapping detections
         """
         self.confidence = confidence
         self.fruit_type = fruit_type.lower()
+        self.min_size = min_size
+        self.max_size = max_size
+        self.iou_threshold = iou_threshold
         
         # Load YOLO26 nano segmentation model (traces fruit outlines, not boxes)
         # First run will download the model (~6MB)
@@ -197,6 +208,69 @@ class CitrusDetector:
         else:
             # For round fruits (oranges, grapefruits), average both dimensions
             return (width_px + height_px) / 2
+
+    def _calculate_iou(self, box1, box2):
+        """
+        Calculate Intersection over Union (IoU) between two bounding boxes.
+
+        Args:
+            box1, box2: Tuples of (x1, y1, x2, y2)
+
+        Returns:
+            IoU value between 0 and 1
+        """
+        x1_1, y1_1, x2_1, y2_1 = box1
+        x1_2, y1_2, x2_2, y2_2 = box2
+
+        # Calculate intersection area
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+
+        if x2_i < x1_i or y2_i < y1_i:
+            return 0.0
+
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+
+        # Calculate union area
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+
+        return intersection / union if union > 0 else 0.0
+
+    def _remove_duplicates(self, fruits, iou_threshold=0.5):
+        """
+        Remove duplicate detections based on IoU (Intersection over Union).
+        Keeps the detection with higher confidence.
+
+        Args:
+            fruits: List of fruit detections
+            iou_threshold: IoU threshold for considering boxes as duplicates (default: 0.5)
+
+        Returns:
+            Filtered list of fruits without duplicates
+        """
+        if len(fruits) <= 1:
+            return fruits
+
+        # Sort by confidence (highest first)
+        fruits_sorted = sorted(fruits, key=lambda x: x['confidence'], reverse=True)
+
+        keep = []
+        while fruits_sorted:
+            # Take the highest confidence detection
+            current = fruits_sorted.pop(0)
+            keep.append(current)
+
+            # Remove overlapping detections
+            fruits_sorted = [
+                f for f in fruits_sorted
+                if self._calculate_iou(current['bbox'], f['bbox']) < iou_threshold
+            ]
+
+        return keep
 
     def detect(self, image_path: str, marker_size_mm: float = None):
         """
@@ -263,6 +337,20 @@ class CitrusDetector:
                 width_px = x2 - x1
                 height_px = y2 - y1
 
+                # Get image dimensions for size filtering
+                img_height, img_width = image.shape[:2]
+
+                # Calculate detection area as fraction of total image
+                detection_area = (width_px * height_px) / (img_width * img_height)
+
+                # Filter out detections that are too small or too large
+                if detection_area < self.min_size:
+                    print(f"  Skipping detection: too small ({detection_area:.3f} < {self.min_size})")
+                    continue
+                if detection_area > self.max_size:
+                    print(f"  Skipping detection: too large ({detection_area:.3f} > {self.max_size})")
+                    continue
+
                 # Calculate diameter based on fruit type
                 diameter_px = self._calculate_diameter(width_px, height_px)
 
@@ -322,7 +410,13 @@ class CitrusDetector:
 
                 fruits.append(fruit)
 
-        # Step 4: Build summary
+        # Step 4: Remove duplicate/overlapping detections
+        fruits_before = len(fruits)
+        fruits = self._remove_duplicates(fruits, iou_threshold=self.iou_threshold)
+        if fruits_before > len(fruits):
+            print(f"Removed {fruits_before - len(fruits)} duplicate detection(s)")
+
+        # Step 5: Build summary
         result = {
             'image_path': image_path,
             'total_count': len(fruits),
@@ -434,6 +528,12 @@ if __name__ == "__main__":
     parser.add_argument("--fruit-type", type=str, default="orange",
                        choices=["orange", "lemon", "grapefruit"],
                        help="Type of fruit: orange (round), lemon (elongated), grapefruit (round)")
+    parser.add_argument("--min-size", type=float, default=0.05,
+                       help="Minimum detection size as fraction of image (default: 0.05 = 5%%)")
+    parser.add_argument("--max-size", type=float, default=0.7,
+                       help="Maximum detection size as fraction of image (default: 0.7 = 70%%)")
+    parser.add_argument("--iou-threshold", type=float, default=0.5,
+                       help="IoU threshold for removing duplicates (default: 0.5, lower=more aggressive)")
     parser.add_argument("--generate-marker", action="store_true",
                        help="Generate a printable ArUco marker")
     
@@ -450,11 +550,15 @@ if __name__ == "__main__":
         print("  python3 citrus_detector.py photo.jpg")
         print("  python3 citrus_detector.py photo.jpg --marker-size 100")
         print("  python3 citrus_detector.py photo.jpg --marker-size 100 --fruit-type lemon")
+        print("  python3 citrus_detector.py photo.jpg --confidence 0.15 --max-size 0.5")
         print("  python3 citrus_detector.py --generate-marker")
         print("\nFruit types:")
         print("  orange     - Round fruits (uses average width/height)")
         print("  lemon      - Elongated fruits (orientation-aware measurement)")
         print("  grapefruit - Round fruits (uses average width/height)")
+        print("\nSize filtering (prevents detecting the box itself):")
+        print("  --min-size 0.05  - Minimum object size (default 5% of image)")
+        print("  --max-size 0.7   - Maximum object size (default 70% of image)")
         sys.exit(1)
     
     # Check image exists
@@ -468,7 +572,9 @@ if __name__ == "__main__":
     print("=" * 50)
     print(f"Fruit type: {args.fruit_type.capitalize()}")
 
-    detector = CitrusDetector(confidence=args.confidence, fruit_type=args.fruit_type)
+    detector = CitrusDetector(confidence=args.confidence, fruit_type=args.fruit_type,
+                              min_size=args.min_size, max_size=args.max_size,
+                              iou_threshold=args.iou_threshold)
     results = detector.detect(args.image, marker_size_mm=args.marker_size)
     
     # Print results
