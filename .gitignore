@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+*.egg-info/
+
+# YOLO models (large files)
+*.pt
+
+# Test images and outputs
+*.jpg
+*.jpeg
+*.png
+*_detected.*
+
+# YOLO output
+runs/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Keep marker generation output folder but ignore its contents
+Aruco Markers/*.png
+Aruco Markers/*.jpg
