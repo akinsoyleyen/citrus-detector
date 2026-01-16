@@ -143,7 +143,8 @@ class CitrusDetector:
     """
 
     def __init__(self, confidence: float = 0.15, fruit_type: str = 'orange',
-                 min_size: float = 0.05, max_size: float = 0.7, iou_threshold: float = 0.5):
+                 min_size: float = 0.05, max_size: float = 0.7, iou_threshold: float = 0.5,
+                 model_size: str = 'n'):
         """
         Initialize the detector.
 
@@ -163,17 +164,23 @@ class CitrusDetector:
             iou_threshold: IoU threshold for removing duplicate detections (0.0-1.0, default 0.5)
                           - Lower (0.3) = more aggressive deduplication
                           - Higher (0.7) = only removes very overlapping detections
+            model_size: YOLO model size (n/s/m/l/x, default: n)
+                       - n (nano): ~6MB, fastest, lowest accuracy
+                       - s (small): ~22MB, fast, better accuracy
+                       - m (medium): ~50MB, moderate speed, good accuracy
+                       - l (large): ~100MB, slower, very good accuracy
+                       - x (xlarge): ~140MB, slowest, best accuracy
         """
         self.confidence = confidence
         self.fruit_type = fruit_type.lower()
         self.min_size = min_size
         self.max_size = max_size
         self.iou_threshold = iou_threshold
-        
-        # Load YOLO26 nano segmentation model (traces fruit outlines, not boxes)
-        # First run will download the model (~6MB)
-        print("Loading YOLO26 segmentation model...")
-        self.model = YOLO("yolo26n-seg.pt")  # -seg = segmentation model
+
+        # Load YOLO26 segmentation model (traces fruit outlines, not boxes)
+        model_name = f"yolo26{model_size}-seg.pt"
+        print(f"Loading YOLO26-{model_size.upper()} segmentation model ({model_name})...")
+        self.model = YOLO(model_name)  # -seg = segmentation model
         print("Model loaded!")
         
         # YOLO is trained on COCO dataset which includes 'orange' (class 49)
@@ -534,6 +541,9 @@ if __name__ == "__main__":
                        help="Maximum detection size as fraction of image (default: 0.7 = 70%%)")
     parser.add_argument("--iou-threshold", type=float, default=0.5,
                        help="IoU threshold for removing duplicates (default: 0.5, lower=more aggressive)")
+    parser.add_argument("--model", type=str, default="n",
+                       choices=["n", "s", "m", "l", "x"],
+                       help="YOLO model size: n(nano,fast), s(small), m(medium), l(large), x(xlarge,accurate)")
     parser.add_argument("--generate-marker", action="store_true",
                        help="Generate a printable ArUco marker")
     
@@ -574,7 +584,7 @@ if __name__ == "__main__":
 
     detector = CitrusDetector(confidence=args.confidence, fruit_type=args.fruit_type,
                               min_size=args.min_size, max_size=args.max_size,
-                              iou_threshold=args.iou_threshold)
+                              iou_threshold=args.iou_threshold, model_size=args.model)
     results = detector.detect(args.image, marker_size_mm=args.marker_size)
     
     # Print results
